@@ -1,88 +1,119 @@
-# Data Pipeline Challenge
+# BlueAlpha Data Pipeline
 
-## Overview
+Advertising data pipeline that ingests data from Google Ads, Facebook, and a CRM system, validates and transforms it through a medallion architecture (bronze/silver/gold S3 keys), and serves it via Athena for analytics.
 
-Build a data pipeline that ingests advertising data from multiple "platforms," handles data quality issues, transforms the data into an analytics-ready warehouse schema, and includes orchestration.
+## Architecture
 
+```
+Vendors / API
+      |
+      v
+[Ingestion]  Google Ads: cron Lambda calls API -> bronze
+             Facebook/CRM: exported directly to bronze S3
+      |
+      v
+[Bronze]     s3://bluealpha-data/bronze/{source}/year=/month=/day=/
+             Raw files, untouched
+      |
+      v  (S3 event triggers)
+[Transformation Lambdas]
+             Pydantic validation, date normalization, deduplication,
+             outlier detection. Failures -> quarantine with reason.
+      |
+      v
+[Silver]     s3://bluealpha-data/silver/{source}/year=/month=/day=/
+             Validated Parquet, source-specific staging schemas
+      |
+      v  (Glue ETL job)
+[Gold]       s3://bluealpha-data/gold/fct_*/
+             Unified fact tables as Parquet, cataloged by Glue Crawler
+      |
+      v
+[Athena]     SQL queries over Glue Data Catalog
+```
 
-**Expected time:** 4 hours.
+## Project Structure
 
-**When to Ask vs. When to Assume:**
+```
+src/
+├── helpers/             Shared utilities (imported by all Lambdas + Glue)
+│   ├── constants.py       S3 paths, bucket name, source names
+│   ├── date_parser.py     Robust date parsing (dateutil)
+│   ├── models.py          Pydantic validation models per source
+│   └── s3.py              S3 read/write helpers (pseudo-code)
+│
+├── lambdas/             Lambda functions
+│   ├── bluealpha_google_ingestion.py        Cron -> API -> bronze
+│   ├── bluealpha_google_transformation.py   Bronze -> validate -> silver
+│   ├── bluealpha_facebook_transformation.py Bronze -> validate -> silver
+│   └── bluealpha_crm_transformation.py      Bronze -> validate -> silver
+│
+├── glue/                Glue ETL
+│   └── load_to_gold.py    Silver -> gold fact tables (idempotent merge)
+│
+└── infra/               Infrastructure config (pseudo-code)
+    ├── lambda_triggers.py   S3 events + EventBridge cron
+    ├── cloudwatch_alarms.py Lambda failure + quarantine alarms
+    ├── glue_crawler.py      Crawler config for gold layer
+    └── iam_roles.py         Least-privilege IAM roles
+```
 
-We're evaluating **both** your judgment about when to ask vs. when to assume **and** the quality of your assumptions. Technical implementation details can often be assumed. Business-critical decisions about data relationships and intended use cases may warrant clarification.
+## Setup
 
-## Background
+### Requirements
 
-At BlueAlpha, we help marketers understand which channels drive results and how to allocate budgets. To do this, we need to:
-1. Ingest data from many different sources (ad platforms, CRMs, spreadsheets)
-2. Handle the inevitable data quality issues (missing values, duplicates, format inconsistencies)
-3. Transform everything into a unified schema for analysis
+- Python 3.9+
+- Dependencies: `pip install -r requirements.txt`
 
-This challenge mirrors that work at a smaller scale.
+```
+pydantic>=2.0,<3.0
+python-dateutil>=2.8
+boto3>=1.28
+pyarrow>=14.0
+```
 
-## Deliverables
+### Running Locally
 
-### 1. Data Ingestion Layer (Python)
+The core parsing, validation, and transformation logic is real, runnable Python. Infrastructure code (S3 interactions, Lambda handlers, Glue plumbing) is pseudo-code that documents the production behavior.
 
-Ingest data from the 3 mock sources provided in the `data/` directory:
+To inspect the transformation logic locally:
 
-| File | Description |
-|------|-------------|
-| `google_ads_api.json` | Simulated API response |
-| `facebook_export.csv` | CSV export file |
-| `crm_revenue.csv` | CRM export |
+```python
+import json
+from src.lambdas.bluealpha_google_transformation import flatten_google_ads_json, validate_and_transform
 
-### 2. Data Quality & Validation
+with open("data/google_ads_api.json") as f:
+    raw = json.load(f)
 
-- Implement validation checks for each source
-- Handle: missing values, duplicates, format inconsistencies, invalid data
+rows = flatten_google_ads_json(raw)
+valid, quarantined = validate_and_transform(rows)
+```
 
-### 3. Transformation Layer (SQL/dbt-style)
+```python
+import csv
+from src.lambdas.bluealpha_facebook_transformation import validate_and_transform
 
-Design a normalized warehouse schema and write transformations. You can use dbt, SQLAlchemy, raw SQL, or Python—whatever you're most comfortable with.
+with open("data/facebook_export.csv") as f:
+    rows = list(csv.DictReader(f))
 
-### 4. Orchestration
+valid, quarantined = validate_and_transform(rows)
+```
 
-Define a DAG/workflow that:
-- Handles dependencies between ingestion, validation, and transformation
-- Includes retry logic for failures
-- Is idempotent (safe to re-run)
+```python
+import csv
+from src.lambdas.bluealpha_crm_transformation import parse_crm_csv, deduplicate_rows, validate_and_transform
 
-**Note:** Working code is preferred, but well-documented pseudo-code/config is acceptable if local orchestrator setup is complex.
+with open("data/crm_revenue.csv") as f:
+    rows = list(csv.DictReader(f))
 
-### 5. Documentation
+rows, dropped = deduplicate_rows(rows)
+valid, quarantined = validate_and_transform(rows)
+```
 
-Include in your submission:
+### Deployment
 
-**README.md** with:
-- Setup instructions (how to run your pipeline)
-- Dependencies and requirements
+In production, each Lambda would be packaged with the `src/helpers/` directory as a Lambda layer.   
 
-**DESIGN.md** (~1-2 pages) covering:
-- Schema design decisions and rationale
-- Data quality strategy
-- Trade-offs made given time constraints
-- What you'd do differently with more time
-- **Architecture Decision** for major decisions:
-  - For key decisions, document: the options considered, your chosen approach, why you chose it, and what trade-offs you accepted
-  - Examples: CRM data handling, outlier treatment, orchestration tool choice
+Infrastructure would be provisioned via CDK using the configs in `src/infra/` as guides.
 
-
-## Submission
-
-Submit your solution as a GitHub repository (public or private with access granted). Include:
-- All source code
-- README with setup instructions
-- DESIGN.md with your design document (including ADRs)
-- Any additional documentation you think is helpful
-
-## After Submission
-
-We'll schedule a 30-45 minute live walkthrough where you'll:
-1. Walk us through your design decisions
-2. Explain how you handled specific data quality issues
-3. Discuss what you'd change with more time
-4. Answer questions about scaling and edge cases
-
-This is a conversation, not a test. We're interested in your thinking process and how you approach problems.
-
+See [SUBMISSION_DESIGN.md](SUBMISSION_DESIGN.md) for detailed data quality strategy and architecture decisions.
