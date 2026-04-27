@@ -1,3 +1,7 @@
+BlueAlpha Founding Data Engineer ; data infra system design
+
+---
+
 # BlueAlpha Data Pipeline
 
 Advertising data pipeline that ingests data from Google Ads, Facebook, and a CRM system, validates and transforms it through a medallion architecture (bronze/silver/gold S3 keys), and serves it via Athena for analytics.
